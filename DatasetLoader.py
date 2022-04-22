@@ -7,7 +7,7 @@ import random
 import pdb
 import os
 import threading
-import time
+import time, itertools
 import math
 import glob
 import soundfile
@@ -105,20 +105,25 @@ class AugmentWAV(object):
         return signal.convolve(audio, rir, mode='full')[:,:self.max_audio]
 
 
-class train_dataset_loader(Dataset):
+class TrainDatasetLoader(Dataset):
     def __init__(self, train_list, augment, musan_path, rir_path, max_frames, train_path, **kwargs):
 
         self.augment_wav = AugmentWAV(musan_path=musan_path, rir_path=rir_path, max_frames = max_frames)
 
         self.train_list = train_list
-        self.max_frames = max_frames;
+        self.max_frames = max_frames
         self.musan_path = musan_path
         self.rir_path   = rir_path
         self.augment    = augment
+        # self.support_query_classes = support_query_classes
         
         # Read training files
         with open(train_list) as dataset_file:
-            lines = dataset_file.readlines();
+            lines = dataset_file.readlines()
+
+        # # Do not include classes that are already in query and support sets
+        # for sq_class in support_query_classes:
+        #     lines = list(filter(lambda line: sq_class not in line, lines))
 
         # Make a dictionary of ID names and ID indices
         dictkeys = list(set([x.split()[0] for x in lines]))
@@ -130,10 +135,10 @@ class train_dataset_loader(Dataset):
         self.data_label = []
         
         for lidx, line in enumerate(lines):
-            data = line.strip().split();
+            data = line.strip().split()
 
-            speaker_label = dictkeys[data[0]];
-            filename = os.path.join(train_path,data[1]);
+            speaker_label = dictkeys[data[0]]
+            filename = os.path.join(train_path,data[1])
             
             self.data_label.append(speaker_label)
             self.data_list.append(filename)
@@ -166,9 +171,160 @@ class train_dataset_loader(Dataset):
     def __len__(self):
         return len(self.data_list)
 
+class SupportQueryUtils(Dataset):
+    def __init__(self, test_list, test_path, test_n_way, n_shot, n_query, **kwargs):
+        self.train_list = test_list
+        self.test_path = test_path
+        self.test_n_way = test_n_way
+        self.n_query = n_query
+        self.n_shot = n_shot
 
+        self.data_list_support  = []
+        self.data_label_support = []
+        self.data_list_query  = []
+        self.data_label_query = []
 
-class test_dataset_loader(Dataset):
+        self.support_query_classes = []
+
+        # Read testing files
+        with open(test_list) as dataset_file:
+            lines = dataset_file.readlines()
+
+        support_set_files, query_set_files = self.getSupportAndQueryFiles(lines)
+
+        # Make a dictionary of ID names and ID indices
+        dictkeys_support = list(set([x.split('/', 1)[0] for x in support_set_files]))
+        dictkeys_support.sort()
+        dictkeys_support = { key : ii for ii, key in enumerate(dictkeys_support) }
+
+        dictkeys_query = list(set([x.split('/', 1)[0] for x in query_set_files]))
+        dictkeys_query.sort()
+        dictkeys_query = { key : ii for ii, key in enumerate(dictkeys_query) }
+
+        # Parse the support and query sets into file names and ID indices
+        for lidx, line in enumerate(support_set_files):
+            data = line.split('/', 1)[0]
+
+            speaker_label = dictkeys_support[data]
+            filename = os.path.join(test_path, line)
+            
+            self.data_label_support.append(speaker_label)
+            self.data_list_support.append(filename)
+        
+        for lidx, line in enumerate(query_set_files):
+            data = line.split('/', 1)[0]
+
+            speaker_label = dictkeys_query[data]
+            filename = os.path.join(test_path, line)
+            
+            self.data_label_query.append(speaker_label)
+            self.data_list_query.append(filename)
+        
+    ## ===== ===== ===== ===== ===== ===== ===== =====
+    ## Get support and query files
+    ## ===== ===== ===== ===== ===== ===== ===== =====
+
+    def getSupportAndQueryFiles(self, lines):
+        ## Get a list of unique file names
+        files = list(itertools.chain(*[x.strip().split()[-2:] for x in lines]))
+        setfiles = list(set(files))
+        setfiles.sort()
+
+        random_class_files = random.sample(setfiles, self.test_n_way)
+
+        # Round up query per class number and if the initial number of queries
+        # is smaller, take only n_query elements at the end.
+        query_per_class = int(math.ceil(self.n_query / self.test_n_way))
+            
+        support_set_files = []
+        query_set_files = []
+        for random_file in random_class_files:
+            random_class = random_file.split('/', 1)[0]
+            self.support_query_classes.append(random_class)
+            
+            all_class_files = list(filter(lambda f: random_class in f, setfiles))
+            query_and_support_files = random.sample(all_class_files, self.n_shot + query_per_class)
+            support_set_files = support_set_files + query_and_support_files[:self.n_shot]
+            query_set_files = query_set_files + query_and_support_files[self.n_shot:]
+        
+        # Take only n_query number of elements
+        query_set_files = query_set_files[:self.n_query]
+
+        return support_set_files, query_set_files
+    
+    def getSupportSet(self):
+        return self.data_list_support, self.data_label_support
+        
+    def getQuerySet(self):
+        return self.data_list_query, self.data_label_query
+    
+    def getSupportQueryClasses(self):
+        return self.support_query_classes
+
+class SupportDatasetLoader(Dataset):
+    def __init__(self, data_list_support, data_label_support, augment,
+        musan_path, rir_path, max_frames, **kwargs):
+        self.augment_wav = AugmentWAV(musan_path=musan_path, rir_path=rir_path,
+                            max_frames = max_frames)
+        self.max_frames = max_frames
+        self.musan_path = musan_path
+        self.rir_path   = rir_path
+        self.augment    = augment
+
+        self.data_list_support = data_list_support
+        self.data_label_support = data_label_support
+    
+    # @property
+    # def data(self):
+    #     return self.data_list_support
+    
+    # @property
+    # def data_label(self):
+    #     return self.data_label_support
+
+    def __getitem__(self, index):
+        feat = []
+        # indices = list(indices)
+        # for index in indices:
+            
+        audio = loadWAV(self.data_list_support[index], self.max_frames, evalmode=False)
+            
+        if self.augment:
+            augtype = random.randint(0,4)
+            if augtype == 1:
+                audio   = self.augment_wav.reverberate(audio)
+            elif augtype == 2:
+                audio   = self.augment_wav.additive_noise('music',audio)
+            elif augtype == 3:
+                audio   = self.augment_wav.additive_noise('speech',audio)
+            elif augtype == 4:
+                audio   = self.augment_wav.additive_noise('noise',audio)
+                    
+        feat.append(audio)
+
+        feat = numpy.concatenate(feat, axis=0)
+
+        return torch.FloatTensor(feat), self.data_label_support[index]
+
+    def __len__(self):
+        return len(self.data_list_support)
+
+class QueryDatasetLoader(Dataset):
+    def __init__(self, data_list_query, test_path, eval_frames, num_eval, **kwargs):
+        self.max_frames = eval_frames
+        self.num_eval   = num_eval
+        self.test_path  = test_path
+
+        self.data_list_query = data_list_query
+
+    def __getitem__(self, index):
+        audio = loadWAV(os.path.join(self.test_path, self.data_list_query[index]), self.max_frames, evalmode=True, num_eval=self.num_eval)
+        return torch.FloatTensor(audio), self.data_list_query[index]
+
+    def __len__(self):
+        return len(self.data_list_query)
+
+class TestDatasetLoader(Dataset):
     def __init__(self, test_list, test_path, eval_frames, num_eval, **kwargs):
         self.max_frames = eval_frames;
         self.num_eval   = num_eval
@@ -183,7 +339,7 @@ class test_dataset_loader(Dataset):
         return len(self.test_list)
 
 
-class train_dataset_sampler(torch.utils.data.Sampler):
+class TrainDatasetSampler(torch.utils.data.Sampler):
     def __init__(self, data_source, nPerSpeaker, max_seg_per_spk, batch_size, distributed, seed, **kwargs):
 
         self.data_label         = data_source.data_label;

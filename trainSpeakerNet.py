@@ -29,14 +29,14 @@ parser.add_argument('--max_frames',     type=int,   default=200,    help='Input 
 parser.add_argument('--eval_frames',    type=int,   default=300,    help='Input length to the network for testing; 0 uses the whole files');
 parser.add_argument('--batch_size',     type=int,   default=200,    help='Batch size, number of speakers per batch');
 parser.add_argument('--max_seg_per_spk', type=int,  default=500,    help='Maximum number of utterances per speaker per epoch');
-parser.add_argument('--nDataLoaderThread', type=int, default=5,     help='Number of loader threads');
+parser.add_argument('--nDataLoaderThread', type=int, default=5,     help='Number of loader threads'); # !!! zamineic na wiecej
 parser.add_argument('--augment',        type=bool,  default=False,  help='Augment input')
 parser.add_argument('--seed',           type=int,   default=10,     help='Seed for the random number generator');
 
 ## Training details
-parser.add_argument('--test_interval',  type=int,   default=10,     help='Test and save every [test_interval] epochs');
-parser.add_argument('--max_epoch',      type=int,   default=500,    help='Maximum number of epochs');
-parser.add_argument('--trainfunc',      type=str,   default="",     help='Loss function');
+parser.add_argument('--test_interval',  type=int,   default=10,     help='Test and save every [test_interval] epochs')
+parser.add_argument('--max_epoch',      type=int,   default=15,     help='Maximum number of epochs')
+parser.add_argument('--trainfunc',      type=str,   default="",     help='Loss function')
 
 ## Optimizer
 parser.add_argument('--optimizer',      type=str,   default="adam", help='sgd or adam');
@@ -46,27 +46,33 @@ parser.add_argument("--lr_decay",       type=float, default=0.95,   help='Learni
 parser.add_argument('--weight_decay',   type=float, default=0,      help='Weight decay in the optimizer');
 
 ## Loss functions
-parser.add_argument("--hard_prob",      type=float, default=0.5,    help='Hard negative mining probability, otherwise random, only for some loss functions');
-parser.add_argument("--hard_rank",      type=int,   default=10,     help='Hard negative mining rank in the batch, only for some loss functions');
-parser.add_argument('--margin',         type=float, default=0.1,    help='Loss margin, only for some loss functions');
-parser.add_argument('--scale',          type=float, default=30,     help='Loss scale, only for some loss functions');
-parser.add_argument('--nPerSpeaker',    type=int,   default=1,      help='Number of utterances per speaker per batch, only for metric learning based losses');
-parser.add_argument('--nClasses',       type=int,   default=5994,   help='Number of speakers in the softmax layer, only for softmax-based losses');
+parser.add_argument("--hard_prob",      type=float, default=0.5,    help='Hard negative mining probability, otherwise random, only for some loss functions')
+parser.add_argument("--hard_rank",      type=int,   default=10,     help='Hard negative mining rank in the batch, only for some loss functions')
+parser.add_argument('--margin',         type=float, default=0.1,    help='Loss margin, only for some loss functions')
+parser.add_argument('--scale',          type=float, default=30,     help='Loss scale, only for some loss functions')
+parser.add_argument('--nPerSpeaker',    type=int,   default=1,      help='Number of utterances per speaker per batch, only for metric learning based losses')
+parser.add_argument('--nClasses',       type=int,   default=5994,   help='Number of speakers in the softmax layer, only for softmax-based losses')
+
+## Few shot learning params
+parser.add_argument('--train_n_way',    type=int,   default=5,      help='Class num to classify for training') # baseline and baseline++ would ignore this parameter
+parser.add_argument('--test_n_way',     type=int,   default=5,      help='Class num to classify for testing (validation) ') # baseline and baseline++ only use this parameter in finetuning
+parser.add_argument('--n_shot',         type=int,   default=5,      help='Number of labeled data in each class') # baseline and baseline++ only use this parameter in finetuning
+parser.add_argument('--n_query',        type=int,   default=10,      help='Number of queries')
 
 ## Evaluation parameters
-parser.add_argument('--dcf_p_target',   type=float, default=0.05,   help='A priori probability of the specified target speaker');
-parser.add_argument('--dcf_c_miss',     type=float, default=1,      help='Cost of a missed detection');
-parser.add_argument('--dcf_c_fa',       type=float, default=1,      help='Cost of a spurious detection');
+parser.add_argument('--dcf_p_target',   type=float, default=0.05,   help='A priori probability of the specified target speaker')
+parser.add_argument('--dcf_c_miss',     type=float, default=1,      help='Cost of a missed detection')
+parser.add_argument('--dcf_c_fa',       type=float, default=1,      help='Cost of a spurious detection')
 
 ## Load and save
-parser.add_argument('--initial_model',  type=str,   default="",     help='Initial model weights');
-parser.add_argument('--save_path',      type=str,   default="exps/exp1", help='Path for model and logs');
+parser.add_argument('--initial_model',  type=str,   default="",     help='Initial model weights')
+parser.add_argument('--save_path',      type=str,   default="exps/exp1", help='Path for model and logs')
 
 ## Training and test data
-parser.add_argument('--train_list',     type=str,   default="data/train_list.txt",  help='Train list');
-parser.add_argument('--test_list',      type=str,   default="data/test_list.txt",   help='Evaluation list');
-parser.add_argument('--train_path',     type=str,   default="data/voxceleb2", help='Absolute path to the train set');
-parser.add_argument('--test_path',      type=str,   default="data/voxceleb1", help='Absolute path to the test set');
+parser.add_argument('--train_list',     type=str,   default="/kgajdamo/mgr/voxceleb_trainer/data/train_list.txt",  help='Train list');
+parser.add_argument('--test_list',      type=str,   default="/kgajdamo/mgr/voxceleb_trainer/data/test_list.txt",   help='Evaluation list');
+parser.add_argument('--train_path',     type=str,   default="/kgajdamo/mgr/voxceleb_trainer/data/voxceleb2", help='Absolute path to the train set');
+parser.add_argument('--test_path',      type=str,   default="/kgajdamo/mgr/voxceleb_trainer/data/voxceleb1", help='Absolute path to the test set');
 parser.add_argument('--musan_path',     type=str,   default="data/musan_split", help='Absolute path to the test set');
 parser.add_argument('--rir_path',       type=str,   default="data/RIRS_NOISES/simulated_rirs", help='Absolute path to the test set');
 
@@ -149,10 +155,14 @@ def main_worker(gpu, ngpus_per_node, args):
         ## Write args to scorefile
         scorefile   = open(args.result_save_path+"/scores.txt", "a+");
 
-    ## Initialise trainer and data loader
-    train_dataset = train_dataset_loader(**vars(args))
+    support_query_utils = SupportQueryUtils(**vars(args))
 
-    train_sampler = train_dataset_sampler(train_dataset, **vars(args))
+    support_query_classes = support_query_utils.getSupportQueryClasses()
+
+    ## Initialise trainer and data loader
+    train_dataset = TrainDatasetLoader(**vars(args))
+
+    train_sampler = TrainDatasetSampler(train_dataset, **vars(args))
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -187,29 +197,94 @@ def main_worker(gpu, ngpus_per_node, args):
 
         pytorch_total_params = sum(p.numel() for p in s.module.__S__.parameters())
 
+        # Define new Classifier
+        NewLossFunction = importlib.import_module('loss.' + args.trainfunc).__getattribute__('LossFunction')
+        new_loss_func = NewLossFunction(**vars(args)).cuda()
+
         print('Total parameters: ',pytorch_total_params)
         print('Test list',args.test_list)
         
-        sc, lab, _ = trainer.evaluateFromList(**vars(args))
+        data_list_support, data_label_support = support_query_utils.getSupportSet()
+
+        ## Define support data loader
+        support_dataset = SupportDatasetLoader(data_list_support, data_label_support, **vars(args))
+
+        if args.distributed:
+            sampler = torch.utils.data.distributed.DistributedSampler(support_dataset, shuffle=False)
+        else:
+            sampler = None
+
+        support_loader = torch.utils.data.DataLoader(
+            support_dataset,
+            batch_size=4, # ???
+            shuffle=False,
+            num_workers=args.nDataLoaderThread,
+            drop_last=False,
+            sampler=sampler
+        )
+        
+        # Fine tune network
+        for it in range(it, args.max_epoch + 1):
+            clr = [x['lr'] for x in trainer.__optimizer__.param_groups]
+
+            loss, fine_tuner = trainer.fineTuneNetwork(support_loader, new_loss_func, verbose=(args.gpu == 0), **vars(args))
+
+            if args.gpu == 0:
+                print('\n',time.strftime("%Y-%m-%d %H:%M:%S"), "Epoch {:d}, TEER/TAcc {:2.2f}, TLOSS {:f}, LR {:f}".format(it, fine_tuner, loss, max(clr)))
+                scorefile.write("Epoch {:d}, TEER/TAcc {:2.2f}, TLOSS {:f}, LR {:f} \n".format(it, fine_tuner, loss, max(clr)))
+
+            if it % args.test_interval == 0:
+                sc, lab, _ = trainer.evaluateQuerySet(support_query_utils, support_query_classes, **vars(args))
+
+                if args.gpu == 0:
+                    result = tuneThresholdfromScore(sc, lab, [1, 0.1])
+
+                    fnrs, fprs, thresholds = ComputeErrorRates(sc, lab)
+                    mindcf, threshold = ComputeMinDcf(fnrs, fprs, thresholds, args.dcf_p_target, args.dcf_c_miss, args.dcf_c_fa)
+
+                    eers.append(result[1])
+
+                    print('\n',time.strftime("%Y-%m-%d %H:%M:%S"), "Epoch {:d}, VEER {:2.4f}, MinDCF {:2.5f}".format(it, result[1], mindcf))
+                    scorefile.write("Epoch {:d}, VEER {:2.4f}, MinDCF {:2.5f}\n".format(it, result[1], mindcf))
+
+                    trainer.saveParameters(args.model_save_path+"/model%09d.model"%it)
+
+                    with open(args.model_save_path+"/model%09d.eer"%it, 'w') as eerfile:
+                        eerfile.write('{:2.4f}'.format(result[1]))
+
+                    scorefile.flush()
+            
+            if ("nsml" in sys.modules) and args.gpu == 0:
+                training_report = {}
+                training_report["summary"] = True
+                training_report["epoch"] = it
+                training_report["step"] = it
+                training_report["train_loss"] = loss
+                training_report["min_eer"] = min(eers)
+
+                nsml.report(**training_report)
 
         if args.gpu == 0:
+            scorefile.close()
 
-            result = tuneThresholdfromScore(sc, lab, [1, 0.1]);
+        # if args.gpu == 0:
 
-            fnrs, fprs, thresholds = ComputeErrorRates(sc, lab)
-            mindcf, threshold = ComputeMinDcf(fnrs, fprs, thresholds, args.dcf_p_target, args.dcf_c_miss, args.dcf_c_fa)
+        #     result = tuneThresholdfromScore(sc, lab, [1, 0.1]);
 
-            print('\n',time.strftime("%Y-%m-%d %H:%M:%S"), "VEER {:2.4f}".format(result[1]), "MinDCF {:2.5f}".format(mindcf));
+        #     fnrs, fprs, thresholds = ComputeErrorRates(sc, lab)
+        #     mindcf, threshold = ComputeMinDcf(fnrs, fprs, thresholds, args.dcf_p_target, args.dcf_c_miss, args.dcf_c_fa)
 
-            if ("nsml" in sys.modules) and args.gpu == 0:
-                training_report = {};
-                training_report["summary"] = True;
-                training_report["epoch"] = it;
-                training_report["step"] = it;
-                training_report["val_eer"] = result[1];
-                training_report["val_dcf"] = mindcf;
+        #     print('\n',time.strftime("%Y-%m-%d %H:%M:%S"), "VEER {:2.4f}".format(result[1]), "MinDCF {:2.5f}".format(mindcf));
 
-                nsml.report(**training_report);
+        #     if ("nsml" in sys.modules) and args.gpu == 0:
+        #         training_report = {};
+        #         training_report["summary"] = True;
+        #         training_report["epoch"] = it;
+        #         training_report["step"] = it;
+        #         training_report["val_eer"] = result[1];
+        #         training_report["val_dcf"] = mindcf;
+
+        #         nsml.report(**training_report);
 
         return
 

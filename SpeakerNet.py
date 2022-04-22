@@ -8,7 +8,7 @@ import numpy, math, pdb, sys, random
 import time, os, itertools, shutil, importlib
 
 from tuneThreshold import tuneThresholdfromScore
-from DatasetLoader import test_dataset_loader
+from DatasetLoader import TestDatasetLoader, SupportDatasetLoader, QueryDatasetLoader
 from torch.cuda.amp import autocast, GradScaler
 
 class WrappedModel(nn.Module):
@@ -26,13 +26,13 @@ class WrappedModel(nn.Module):
 class SpeakerNet(nn.Module):
 
     def __init__(self, model, optimizer, trainfunc, nPerSpeaker, **kwargs):
-        super(SpeakerNet, self).__init__();
+        super(SpeakerNet, self).__init__()
 
         SpeakerNetModel = importlib.import_module('models.'+model).__getattribute__('MainModel')
-        self.__S__ = SpeakerNetModel(**kwargs);
+        self.__S__ = SpeakerNetModel(**kwargs)
 
         LossFunction = importlib.import_module('loss.'+trainfunc).__getattribute__('LossFunction')
-        self.__L__ = LossFunction(**kwargs);
+        self.__L__ = LossFunction(**kwargs)
 
         self.nPerSpeaker = nPerSpeaker
 
@@ -58,6 +58,7 @@ class ModelTrainer(object):
     def __init__(self, speaker_model, optimizer, scheduler, gpu, mixedprec, **kwargs):
 
         self.__model__  = speaker_model
+        print(self.__model__)
 
         Optimizer = importlib.import_module('optimizer.'+optimizer).__getattribute__('Optimizer')
         self.__optimizer__ = Optimizer(self.__model__.parameters(), **kwargs)
@@ -158,7 +159,7 @@ class ModelTrainer(object):
         setfiles.sort()
 
         ## Define test data loader
-        test_dataset = test_dataset_loader(setfiles, test_path, num_eval=num_eval, **kwargs)
+        test_dataset = TestDatasetLoader(setfiles, test_path, num_eval=num_eval, **kwargs)
 
         if distributed:
             sampler = torch.utils.data.distributed.DistributedSampler(test_dataset, shuffle=False)
@@ -235,6 +236,174 @@ class ModelTrainer(object):
 
         return (all_scores, all_labels, all_trials);
 
+    ## ===== ===== ===== ===== ===== ===== ===== =====
+    ## Evaluate query set
+    ## ===== ===== ===== ===== ===== ===== ===== =====
+
+    def evaluateQuerySet(self, support_query_utils, support_query_classes, test_list, test_path, nDataLoaderThread, distributed, print_interval=100, num_eval=10, **kwargs):
+
+        if distributed:
+            rank = torch.distributed.get_rank()
+        else:
+            rank = 0
+        
+        self.__model__.eval()
+        
+        lines       = []
+        feats       = {}
+        tstart      = time.time()
+
+        data_list_query, data_label_query = support_query_utils.getQuerySet()
+
+        ## Define test data loader
+        query_dataset = QueryDatasetLoader(data_list_query, test_path, num_eval=num_eval, **kwargs)
+
+        if distributed:
+            sampler = torch.utils.data.distributed.DistributedSampler(query_dataset, shuffle=False)
+        else:
+            sampler = None
+
+        query_loader = torch.utils.data.DataLoader(
+            query_dataset,
+            batch_size=1,
+            shuffle=False,
+            num_workers=nDataLoaderThread,
+            drop_last=False,
+            sampler=sampler
+        )
+
+        ## Extract features for every image
+        for idx, data in enumerate(query_loader):
+            inp1                = data[0][0].cuda()
+            with torch.no_grad():
+                ref_feat            = self.__model__(inp1).detach().cpu()
+            feats[data[1][0]]   = ref_feat
+            telapsed            = time.time() - tstart
+
+            if idx % print_interval == 0 and rank == 0:
+                sys.stdout.write("\rReading {:d} of {:d}: {:.2f} Hz, embedding size {:d}".format(idx, query_loader.__len__(),idx/telapsed,ref_feat.size()[1]))
+
+        all_scores = []
+        all_labels = []
+        all_trials = []
+
+        if distributed:
+            ## Gather features from all GPUs
+            feats_all = [None for _ in range(0,torch.distributed.get_world_size())]
+            torch.distributed.all_gather_object(feats_all, feats)
+
+        if rank == 0:
+
+            tstart = time.time()
+            print('')
+
+            ## Combine gathered features
+            if distributed:
+                feats = feats_all[0]
+                for feats_batch in feats_all[1:]:
+                    feats.update(feats_batch)
+
+            ## Read all lines
+            with open(test_list) as f:
+                lines = f.readlines()
+
+            # Get lines only with support/query set classes
+            sq_lines = []
+            for line in lines:
+                counter = 0
+                for sq_class in support_query_classes:
+                    if line.count(sq_class) == 2:
+                        counter += 2
+                    elif sq_class in line:
+                        counter += 1
+                    if counter == 2:
+                        sq_lines.append(line)
+
+            # for line in lines:
+            #     if any(sq_class in line for sq_class in support_query_classes):
+
+            # sq_lines = [line.strip() for line in lines]
+            # for sq_class in support_query_classes:
+            #     sq_lines = list(filter(lambda line: sq_class in line, lines))
+            
+
+            ## Read files and compute all scores
+            for idx, line in enumerate(sq_lines):
+
+                data = line.split()
+
+                ## Append random label if missing
+                if len(data) == 2: data = [random.randint(0,1)] + data
+
+                ref_feat = feats[data[1]].cuda()
+                com_feat = feats[data[2]].cuda()
+
+                if self.__model__.module.__L__.test_normalize:
+                    ref_feat = F.normalize(ref_feat, p=2, dim=1)
+                    com_feat = F.normalize(com_feat, p=2, dim=1)
+
+                dist = F.pairwise_distance(ref_feat.unsqueeze(-1), com_feat.unsqueeze(-1).transpose(0,2)).detach().cpu().numpy();
+
+                score = -1 * numpy.mean(dist);
+
+                all_scores.append(score);  
+                all_labels.append(int(data[0]));
+                all_trials.append(data[1]+" "+data[2])
+
+                if idx % print_interval == 0:
+                    telapsed = time.time() - tstart
+                    sys.stdout.write("\rComputing {:d} of {:d}: {:.2f} Hz".format(idx,len(lines),idx/telapsed));
+                    sys.stdout.flush();
+
+        return (all_scores, all_labels, all_trials);
+
+    ## ===== ===== ===== ===== ===== ===== ===== =====
+    ## fineTuneNetwork
+    ## ===== ===== ===== ===== ===== ===== ===== =====
+
+    def fineTuneNetwork(self, support_loader, new_loss_func, verbose, trainfunc, nPerSpeaker, **kwargs):
+        self.__model__.train()
+
+        stepsize = support_loader.batch_size
+
+        counter = 0
+        index   = 0
+        loss    = 0
+        top1    = 0   # EER or accuracy
+
+        tstart = time.time()
+
+        ## Fine tune
+        for data, data_label in support_loader:
+            data = data.transpose(1, 0).cuda()
+            self.__model__.zero_grad()
+            label   = torch.LongTensor(data_label).cuda()
+
+            outp = self.__model__(data, None)
+            outp    = outp.reshape(nPerSpeaker,-1,outp.size()[-1]).transpose(1,0).squeeze(1)
+            nloss, prec1 = new_loss_func.forward(outp, label)
+
+            nloss.backward()
+            self.__optimizer__.step()
+
+            loss    += nloss.detach().cpu().item()
+            top1    += prec1.detach().cpu().item()
+            counter += 1
+            index   += stepsize
+
+            telapsed = time.time() - tstart
+            tstart = time.time()
+
+            if verbose:
+                sys.stdout.write("\rProcessing {:d} of {:d}:".format(index, support_loader.__len__()*support_loader.batch_size))
+                sys.stdout.write("Loss {:f} TEER/TAcc {:2.3f}% - {:.2f} Hz ".format(loss/counter, top1/counter, stepsize/telapsed))
+                sys.stdout.flush()
+
+            if self.lr_step == 'iteration': self.__scheduler__.step()
+
+        if self.lr_step == 'epoch': self.__scheduler__.step()
+
+        return (loss/counter, top1/counter)
 
     ## ===== ===== ===== ===== ===== ===== ===== =====
     ## Save parameters
