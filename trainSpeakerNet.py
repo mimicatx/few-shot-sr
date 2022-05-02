@@ -29,13 +29,13 @@ parser.add_argument('--max_frames',     type=int,   default=200,    help='Input 
 parser.add_argument('--eval_frames',    type=int,   default=300,    help='Input length to the network for testing; 0 uses the whole files');
 parser.add_argument('--batch_size',     type=int,   default=200,    help='Batch size, number of speakers per batch');
 parser.add_argument('--max_seg_per_spk', type=int,  default=500,    help='Maximum number of utterances per speaker per epoch');
-parser.add_argument('--nDataLoaderThread', type=int, default=5,     help='Number of loader threads'); # !!! zamineic na wiecej
+parser.add_argument('--nDataLoaderThread', type=int, default=1,     help='Number of loader threads'); # !!! zamineic na wiecej
 parser.add_argument('--augment',        type=bool,  default=False,  help='Augment input')
 parser.add_argument('--seed',           type=int,   default=10,     help='Seed for the random number generator');
 
 ## Training details
-parser.add_argument('--test_interval',  type=int,   default=10,     help='Test and save every [test_interval] epochs')
-parser.add_argument('--max_epoch',      type=int,   default=15,     help='Maximum number of epochs')
+parser.add_argument('--test_interval',  type=int,   default=1,      help='Test and save every [test_interval] epochs')
+parser.add_argument('--max_epoch',      type=int,   default=20,     help='Maximum number of epochs')
 parser.add_argument('--trainfunc',      type=str,   default="",     help='Loss function')
 
 ## Optimizer
@@ -51,12 +51,11 @@ parser.add_argument("--hard_rank",      type=int,   default=10,     help='Hard n
 parser.add_argument('--margin',         type=float, default=0.1,    help='Loss margin, only for some loss functions')
 parser.add_argument('--scale',          type=float, default=30,     help='Loss scale, only for some loss functions')
 parser.add_argument('--nPerSpeaker',    type=int,   default=1,      help='Number of utterances per speaker per batch, only for metric learning based losses')
-parser.add_argument('--nClasses',       type=int,   default=5994,   help='Number of speakers in the softmax layer, only for softmax-based losses')
+parser.add_argument('--nClasses',       type=int,   default=5,   help='Number of speakers in the softmax layer, only for softmax-based losses')
 
 ## Few shot learning params
-parser.add_argument('--train_n_way',    type=int,   default=5,      help='Class num to classify for training') # baseline and baseline++ would ignore this parameter
-parser.add_argument('--test_n_way',     type=int,   default=5,      help='Class num to classify for testing (validation) ') # baseline and baseline++ only use this parameter in finetuning
-parser.add_argument('--n_shot',         type=int,   default=5,      help='Number of labeled data in each class') # baseline and baseline++ only use this parameter in finetuning
+parser.add_argument('--test_n_way',     type=int,   default=1,      help='Class num to classify for testing (validation) ') # baseline and baseline++ only use this parameter in finetuning
+parser.add_argument('--n_shot',         type=int,   default=1,      help='Number of labeled data in each class') # baseline and baseline++ only use this parameter in finetuning
 parser.add_argument('--n_query',        type=int,   default=10,      help='Number of queries')
 
 ## Evaluation parameters
@@ -70,9 +69,9 @@ parser.add_argument('--save_path',      type=str,   default="exps/exp1", help='P
 
 ## Training and test data
 parser.add_argument('--train_list',     type=str,   default="/kgajdamo/mgr/voxceleb_trainer/data/train_list.txt",  help='Train list');
-parser.add_argument('--test_list',      type=str,   default="/kgajdamo/mgr/voxceleb_trainer/data/test_list.txt",   help='Evaluation list');
+parser.add_argument('--test_list',      type=str,   default="/kgajdamo/mgr/voxceleb_trainer/data/sq_list.txt",   help='Evaluation list');
 parser.add_argument('--train_path',     type=str,   default="/kgajdamo/mgr/voxceleb_trainer/data/voxceleb2", help='Absolute path to the train set');
-parser.add_argument('--test_path',      type=str,   default="/kgajdamo/mgr/voxceleb_trainer/data/voxceleb1", help='Absolute path to the test set');
+parser.add_argument('--test_path',      type=str,   default="/kgajdamo/mgr/voxceleb_trainer/data/voxceleb2_sq", help='Absolute path to the test set');
 parser.add_argument('--musan_path',     type=str,   default="data/musan_split", help='Absolute path to the test set');
 parser.add_argument('--rir_path',       type=str,   default="data/RIRS_NOISES/simulated_rirs", help='Absolute path to the test set');
 
@@ -91,7 +90,7 @@ parser.add_argument('--port',           type=str,   default="8888", help='Port f
 parser.add_argument('--distributed',    dest='distributed', action='store_true', help='Enable distributed training')
 parser.add_argument('--mixedprec',      dest='mixedprec',   action='store_true', help='Enable mixed precision training')
 
-args = parser.parse_args();
+args = parser.parse_args()
 
 ## Parse YAML
 def find_option_type(key, parser):
@@ -197,10 +196,6 @@ def main_worker(gpu, ngpus_per_node, args):
 
         pytorch_total_params = sum(p.numel() for p in s.module.__S__.parameters())
 
-        # Define new Classifier
-        NewLossFunction = importlib.import_module('loss.' + args.trainfunc).__getattribute__('LossFunction')
-        new_loss_func = NewLossFunction(**vars(args)).cuda()
-
         print('Total parameters: ',pytorch_total_params)
         print('Test list',args.test_list)
         
@@ -223,18 +218,24 @@ def main_worker(gpu, ngpus_per_node, args):
             sampler=sampler
         )
         
+        # Define new loss function
+        NewLossFunction = importlib.import_module('loss.' + args.trainfunc).__getattribute__('LossFunction')
+        new_loss_func = NewLossFunction(**vars(args)).cuda()
+        # Define new classifier
+        new_fc = nn.Linear(s.module.__S__.out_dim, args.nOut).cuda()
+
         # Fine tune network
         for it in range(it, args.max_epoch + 1):
             clr = [x['lr'] for x in trainer.__optimizer__.param_groups]
 
-            loss, fine_tuner = trainer.fineTuneNetwork(support_loader, new_loss_func, verbose=(args.gpu == 0), **vars(args))
+            loss, fine_tuner = trainer.fineTuneNetwork(support_loader, new_loss_func, new_fc, verbose=(args.gpu == 0), **vars(args))
 
             if args.gpu == 0:
                 print('\n',time.strftime("%Y-%m-%d %H:%M:%S"), "Epoch {:d}, TEER/TAcc {:2.2f}, TLOSS {:f}, LR {:f}".format(it, fine_tuner, loss, max(clr)))
-                scorefile.write("Epoch {:d}, TEER/TAcc {:2.2f}, TLOSS {:f}, LR {:f} \n".format(it, fine_tuner, loss, max(clr)))
+                # scorefile.write("Epoch {:d}, TEER/TAcc {:2.2f}, TLOSS {:f}, LR {:f} \n".format(it, fine_tuner, loss, max(clr)))
 
             if it % args.test_interval == 0:
-                sc, lab, _ = trainer.evaluateQuerySet(support_query_utils, support_query_classes, **vars(args))
+                sc, lab, _ = trainer.evaluateQuerySet(support_query_utils, support_query_classes, new_loss_func, new_fc, **vars(args))
 
                 if args.gpu == 0:
                     result = tuneThresholdfromScore(sc, lab, [1, 0.1])
@@ -244,47 +245,28 @@ def main_worker(gpu, ngpus_per_node, args):
 
                     eers.append(result[1])
 
-                    print('\n',time.strftime("%Y-%m-%d %H:%M:%S"), "Epoch {:d}, VEER {:2.4f}, MinDCF {:2.5f}".format(it, result[1], mindcf))
-                    scorefile.write("Epoch {:d}, VEER {:2.4f}, MinDCF {:2.5f}\n".format(it, result[1], mindcf))
+                    # print('\n',time.strftime("%Y-%m-%d %H:%M:%S"), "Epoch {:d}, VEER {:2.4f}, MinDCF {:2.5f}".format(it, result[1], mindcf))
+                    # scorefile.write("Epoch {:d}, VEER {:2.4f}, MinDCF {:2.5f}\n".format(it, result[1], mindcf))
 
-                    trainer.saveParameters(args.model_save_path+"/model%09d.model"%it)
+                    #trainer.saveParameters(args.model_save_path+"/model%09d.model"%it)
 
-                    with open(args.model_save_path+"/model%09d.eer"%it, 'w') as eerfile:
-                        eerfile.write('{:2.4f}'.format(result[1]))
+                    # with open(args.model_save_path+"/model%09d.eer"%it, 'w') as eerfile:
+                    #     eerfile.write('{:2.4f}'.format(result[1]))
 
-                    scorefile.flush()
+                    # scorefile.flush()
             
-            if ("nsml" in sys.modules) and args.gpu == 0:
-                training_report = {}
-                training_report["summary"] = True
-                training_report["epoch"] = it
-                training_report["step"] = it
-                training_report["train_loss"] = loss
-                training_report["min_eer"] = min(eers)
+            # if ("nsml" in sys.modules) and args.gpu == 0:
+            #     training_report = {}
+            #     training_report["summary"] = True
+            #     training_report["epoch"] = it
+            #     training_report["step"] = it
+            #     training_report["train_loss"] = loss
+            #     training_report["min_eer"] = min(eers)
 
-                nsml.report(**training_report)
+            #     nsml.report(**training_report)
 
         if args.gpu == 0:
             scorefile.close()
-
-        # if args.gpu == 0:
-
-        #     result = tuneThresholdfromScore(sc, lab, [1, 0.1]);
-
-        #     fnrs, fprs, thresholds = ComputeErrorRates(sc, lab)
-        #     mindcf, threshold = ComputeMinDcf(fnrs, fprs, thresholds, args.dcf_p_target, args.dcf_c_miss, args.dcf_c_fa)
-
-        #     print('\n',time.strftime("%Y-%m-%d %H:%M:%S"), "VEER {:2.4f}".format(result[1]), "MinDCF {:2.5f}".format(mindcf));
-
-        #     if ("nsml" in sys.modules) and args.gpu == 0:
-        #         training_report = {};
-        #         training_report["summary"] = True;
-        #         training_report["epoch"] = it;
-        #         training_report["step"] = it;
-        #         training_report["val_eer"] = result[1];
-        #         training_report["val_dcf"] = mindcf;
-
-        #         nsml.report(**training_report);
 
         return
 

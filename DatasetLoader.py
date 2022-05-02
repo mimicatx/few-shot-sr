@@ -115,15 +115,10 @@ class TrainDatasetLoader(Dataset):
         self.musan_path = musan_path
         self.rir_path   = rir_path
         self.augment    = augment
-        # self.support_query_classes = support_query_classes
         
         # Read training files
         with open(train_list) as dataset_file:
             lines = dataset_file.readlines()
-
-        # # Do not include classes that are already in query and support sets
-        # for sq_class in support_query_classes:
-        #     lines = list(filter(lambda line: sq_class not in line, lines))
 
         # Make a dictionary of ID names and ID indices
         dictkeys = list(set([x.split()[0] for x in lines]))
@@ -273,20 +268,10 @@ class SupportDatasetLoader(Dataset):
 
         self.data_list_support = data_list_support
         self.data_label_support = data_label_support
-    
-    # @property
-    # def data(self):
-    #     return self.data_list_support
-    
-    # @property
-    # def data_label(self):
-    #     return self.data_label_support
 
     def __getitem__(self, index):
         feat = []
-        # indices = list(indices)
-        # for index in indices:
-            
+
         audio = loadWAV(self.data_list_support[index], self.max_frames, evalmode=False)
             
         if self.augment:
@@ -310,16 +295,16 @@ class SupportDatasetLoader(Dataset):
         return len(self.data_list_support)
 
 class QueryDatasetLoader(Dataset):
-    def __init__(self, data_list_query, test_path, eval_frames, num_eval, **kwargs):
+    def __init__(self, data_list_query, data_label_query, eval_frames, num_eval, **kwargs):
         self.max_frames = eval_frames
         self.num_eval   = num_eval
-        self.test_path  = test_path
 
         self.data_list_query = data_list_query
+        self.data_label_query = data_label_query
 
     def __getitem__(self, index):
-        audio = loadWAV(os.path.join(self.test_path, self.data_list_query[index]), self.max_frames, evalmode=True, num_eval=self.num_eval)
-        return torch.FloatTensor(audio), self.data_list_query[index]
+        audio = loadWAV(self.data_list_query[index], self.max_frames, evalmode=False)
+        return torch.FloatTensor(audio), self.data_label_query[index], self.data_list_query[index]
 
     def __len__(self):
         return len(self.data_list_query)

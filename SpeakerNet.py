@@ -58,7 +58,6 @@ class ModelTrainer(object):
     def __init__(self, speaker_model, optimizer, scheduler, gpu, mixedprec, **kwargs):
 
         self.__model__  = speaker_model
-        print(self.__model__)
 
         Optimizer = importlib.import_module('optimizer.'+optimizer).__getattribute__('Optimizer')
         self.__optimizer__ = Optimizer(self.__model__.parameters(), **kwargs)
@@ -240,7 +239,7 @@ class ModelTrainer(object):
     ## Evaluate query set
     ## ===== ===== ===== ===== ===== ===== ===== =====
 
-    def evaluateQuerySet(self, support_query_utils, support_query_classes, test_list, test_path, nDataLoaderThread, distributed, print_interval=100, num_eval=10, **kwargs):
+    def evaluateQuerySet(self, support_query_utils, support_query_classes, new_loss_func, new_fc, test_list, test_path, nDataLoaderThread, distributed, nPerSpeaker, print_interval=100, num_eval=10, **kwargs):
 
         if distributed:
             rank = torch.distributed.get_rank()
@@ -249,14 +248,17 @@ class ModelTrainer(object):
         
         self.__model__.eval()
         
-        lines       = []
-        feats       = {}
-        tstart      = time.time()
+        counter = 0
+        index   = 0
+        loss    = 0
+        top1    = 0   # EER or accuracy
+
+        tstart = time.time()
 
         data_list_query, data_label_query = support_query_utils.getQuerySet()
 
         ## Define test data loader
-        query_dataset = QueryDatasetLoader(data_list_query, test_path, num_eval=num_eval, **kwargs)
+        query_dataset = QueryDatasetLoader(data_list_query, data_label_query, num_eval=num_eval, **kwargs)
 
         if distributed:
             sampler = torch.utils.data.distributed.DistributedSampler(query_dataset, shuffle=False)
@@ -272,17 +274,45 @@ class ModelTrainer(object):
             sampler=sampler
         )
 
+        stepsize = query_loader.batch_size
+
+        all_scores = []
+        all_labels = []
+        all_trials = []
+
+        feats = {}
+
         ## Extract features for every image
-        for idx, data in enumerate(query_loader):
-            inp1                = data[0][0].cuda()
+        for data, data_label, list_query in query_loader:
+            inp1                = data[0].cuda()
             with torch.no_grad():
-                ref_feat            = self.__model__(inp1).detach().cpu()
-            feats[data[1][0]]   = ref_feat
-            telapsed            = time.time() - tstart
+                label = torch.LongTensor(data_label).cuda()
 
-            if idx % print_interval == 0 and rank == 0:
-                sys.stdout.write("\rReading {:d} of {:d}: {:.2f} Hz, embedding size {:d}".format(idx, query_loader.__len__(),idx/telapsed,ref_feat.size()[1]))
+                ref_feat = self.__model__(inp1, None).cuda()
+                ref_feat = new_fc(ref_feat).cuda()
 
+                # clone output result to calculate accuracy
+                outp = ref_feat.detach().clone()
+                outp    = outp.reshape(nPerSpeaker,-1,outp.size()[-1]).transpose(1,0).squeeze(1)
+                nloss, prec1 = new_loss_func.forward(outp, label)
+
+            # Convert tuple to string
+            list_query_str = ''.join(list_query)
+            feats[list_query_str] = outp
+
+            loss    += nloss.detach().cpu().item() # usunąć?
+            top1    += prec1.detach().cpu().item()
+            counter += 1
+            index   += 1
+
+            telapsed = time.time() - tstart
+            tstart = time.time()
+
+            if True:
+                sys.stdout.write("\rProcessing {:d} of {:d}:".format(index, query_loader.__len__()*query_loader.batch_size))
+                sys.stdout.write("EVAL: Loss {:f} Accuracy: {:2.3f}% - {:.2f} Hz".format(loss/counter, top1/counter, stepsize/telapsed))
+                sys.stdout.flush()
+        
         all_scores = []
         all_labels = []
         all_trials = []
@@ -303,37 +333,22 @@ class ModelTrainer(object):
                 for feats_batch in feats_all[1:]:
                     feats.update(feats_batch)
 
-            ## Read all lines
-            with open(test_list) as f:
-                lines = f.readlines()
-
-            # Get lines only with support/query set classes
-            sq_lines = []
-            for line in lines:
-                counter = 0
-                for sq_class in support_query_classes:
-                    if line.count(sq_class) == 2:
-                        counter += 2
-                    elif sq_class in line:
-                        counter += 1
-                    if counter == 2:
-                        sq_lines.append(line)
-
-            # for line in lines:
-            #     if any(sq_class in line for sq_class in support_query_classes):
-
-            # sq_lines = [line.strip() for line in lines]
-            # for sq_class in support_query_classes:
-            #     sq_lines = list(filter(lambda line: sq_class in line, lines))
-            
+            queries = []
+            for list_query1 in data_list_query:
+                list_query1_splitted = list_query1.split('/')
+                class_query1 = list(filter(lambda x: 'id' in x, list_query1_splitted))
+                for list_query2 in data_list_query:
+                    if list_query1 == list_query2:
+                        continue
+                    elif class_query1[0] in list_query2:
+                        queries.append('1 ' + list_query1 + ' ' + list_query2)
+                    else:
+                        queries.append('0 ' + list_query1 + ' ' + list_query2)
 
             ## Read files and compute all scores
-            for idx, line in enumerate(sq_lines):
+            for idx, query in enumerate(queries):
 
-                data = line.split()
-
-                ## Append random label if missing
-                if len(data) == 2: data = [random.randint(0,1)] + data
+                data = query.split()
 
                 ref_feat = feats[data[1]].cuda()
                 com_feat = feats[data[2]].cuda()
@@ -344,24 +359,24 @@ class ModelTrainer(object):
 
                 dist = F.pairwise_distance(ref_feat.unsqueeze(-1), com_feat.unsqueeze(-1).transpose(0,2)).detach().cpu().numpy();
 
-                score = -1 * numpy.mean(dist);
+                score = -1 * numpy.mean(dist)
 
                 all_scores.append(score);  
-                all_labels.append(int(data[0]));
+                all_labels.append(int(data[0]))
                 all_trials.append(data[1]+" "+data[2])
 
                 if idx % print_interval == 0:
                     telapsed = time.time() - tstart
-                    sys.stdout.write("\rComputing {:d} of {:d}: {:.2f} Hz".format(idx,len(lines),idx/telapsed));
-                    sys.stdout.flush();
+                    # sys.stdout.write("\rComputing {:d} of {:d}: {:.2f} Hz".format(idx,len(lines),idx/telapsed));
+                    # sys.stdout.flush();
 
-        return (all_scores, all_labels, all_trials);
+        return (all_scores, all_labels, all_trials)
 
     ## ===== ===== ===== ===== ===== ===== ===== =====
     ## fineTuneNetwork
     ## ===== ===== ===== ===== ===== ===== ===== =====
 
-    def fineTuneNetwork(self, support_loader, new_loss_func, verbose, trainfunc, nPerSpeaker, **kwargs):
+    def fineTuneNetwork(self, support_loader, new_loss_func, new_fc, verbose, trainfunc, nPerSpeaker, **kwargs):
         self.__model__.train()
 
         stepsize = support_loader.batch_size
@@ -380,6 +395,7 @@ class ModelTrainer(object):
             label   = torch.LongTensor(data_label).cuda()
 
             outp = self.__model__(data, None)
+            outp = new_fc(outp)
             outp    = outp.reshape(nPerSpeaker,-1,outp.size()[-1]).transpose(1,0).squeeze(1)
             nloss, prec1 = new_loss_func.forward(outp, label)
 
@@ -396,7 +412,7 @@ class ModelTrainer(object):
 
             if verbose:
                 sys.stdout.write("\rProcessing {:d} of {:d}:".format(index, support_loader.__len__()*support_loader.batch_size))
-                sys.stdout.write("Loss {:f} TEER/TAcc {:2.3f}% - {:.2f} Hz ".format(loss/counter, top1/counter, stepsize/telapsed))
+                sys.stdout.write("Loss: {:f} Accuracy %: {:2.3f}% - {:.2f} Hz ".format(loss/counter, top1/counter, stepsize/telapsed))
                 sys.stdout.flush()
 
             if self.lr_step == 'iteration': self.__scheduler__.step()

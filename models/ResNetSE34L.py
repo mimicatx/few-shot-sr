@@ -9,11 +9,12 @@ from torch.nn import Parameter
 from models.ResNetBlocks import *
 
 class ResNetSE(nn.Module):
-    def __init__(self, block, layers, num_filters, nOut, encoder_type='SAP', n_mels=40, log_input=True, **kwargs):
+    def __init__(self, block, layers, num_filters, nOut, eval, encoder_type='SAP', n_mels=40, log_input=True, **kwargs):
         super(ResNetSE, self).__init__()
 
         print('Embedding size is %d, encoder %s.'%(nOut, encoder_type))
-        
+
+        self.eval = eval
         self.inplanes   = num_filters[0]
         self.encoder_type = encoder_type
         self.n_mels     = n_mels
@@ -35,15 +36,15 @@ class ResNetSE(nn.Module):
         if self.encoder_type == "SAP":
             self.sap_linear = nn.Linear(num_filters[3] * block.expansion, num_filters[3] * block.expansion)
             self.attention = self.new_parameter(num_filters[3] * block.expansion, 1)
-            out_dim = num_filters[3] * block.expansion
+            self.out_dim = num_filters[3] * block.expansion
         elif self.encoder_type == "ASP":
             self.sap_linear = nn.Linear(num_filters[3] * block.expansion, num_filters[3] * block.expansion)
             self.attention = self.new_parameter(num_filters[3] * block.expansion, 1)
-            out_dim = num_filters[3] * block.expansion * 2
+            self.out_dim = num_filters[3] * block.expansion * 2
         else:
             raise ValueError('Undefined encoder')
 
-        self.fc = nn.Linear(out_dim, nOut)
+        self.fc = nn.Linear(self.out_dim, nOut)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -109,7 +110,9 @@ class ResNetSE(nn.Module):
             x = torch.cat((mu,rh),1)
 
         x = x.view(x.size()[0], -1)
-        x = self.fc(x)
+
+        if self.eval == False:
+            x = self.fc(x)
 
         return x
 
